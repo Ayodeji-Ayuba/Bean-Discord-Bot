@@ -1,8 +1,4 @@
-# Discord Bot — Phase 1: Moderation Suite
-
-A professional, portfolio-grade Discord bot built with discord.py.
-
----
+# Bean Discord Bot 
 
 ## Project Structure
 
