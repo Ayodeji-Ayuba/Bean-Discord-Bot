@@ -1,5 +1,5 @@
 # Discord Portfolio Bot
-### 15 Modules · 5 Phases · 7,500+ Lines of Python
+###
 
 ---
 
