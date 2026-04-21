@@ -35,7 +35,7 @@ GLOBAL_COGS = [
 ]
 
 GUILD_COGS = [
-    "cogs.infra",   # guild-only to avoid global 100-command limit
+    "cogs.infra",   # guild-only to avoid global 100-command limit set by
 ]
 
 @bot.event

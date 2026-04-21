@@ -37,12 +37,13 @@ CURRENCY         = "🪙"
 CURRENCY_NAME    = "coins"
 
 # Economy config
-DAILY_BASE       = 200
-DAILY_STREAK_MAX = 7
-WORK_COOLDOWN_M  = 30
-WORK_MIN         = 50
-WORK_MAX         = 150
+DAILY_BASE       = 200    # base daily reward (streak multiplies this)
+DAILY_STREAK_MAX = 7      # max streak multiplier
+WORK_COOLDOWN_M  = 30     # minutes between /work uses
+WORK_MIN         = 50     # minimum coins from /work
+WORK_MAX         = 150    # maximum coins from /work
 TRANSFER_TAX     = 0.05   # 5% tax on transfers
+STARTER_BONUS    = 1000   # one-time starter pack (on top of starting 500+500)
 
 # Gambling config
 MIN_BET          = 10
@@ -188,7 +189,60 @@ class Gambling(commands.Cog):
         embed.add_field(name="📊 P&L",    value=f"{CURRENCY} {net:+,}",   inline=True)
         await interaction.response.send_message(embed=embed)
 
-    # ── /daily ────────────────────────────────────────────────────────────────
+    # ── /starter ──────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="starter", description="Claim your one-time starter pack to fund your wallet")
+    async def starter(self, interaction: discord.Interaction):
+        already = await self.bot.db.has_claimed_starter(interaction.guild.id, interaction.user.id)
+        if already:
+            wallet, bank, *_ = await self.bot.db.get_wallet(interaction.guild.id, interaction.user.id)
+            embed = discord.Embed(
+                title="Already Claimed",
+                description=(
+                    "You already claimed your starter pack!\n\n"
+                    "**Current balance:**\n"
+                    f"Wallet: {_fmt(wallet)}\n"
+                    f"Bank:   {_fmt(bank)}\n\n"
+                    "Use `/daily` and `/work` to keep earning."
+                ),
+                colour=COL_INFO
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        await self.bot.db.update_wallet(
+            interaction.guild.id, interaction.user.id,
+            wallet_delta=STARTER_BONUS
+        )
+        await self.bot.db.mark_starter_claimed(interaction.guild.id, interaction.user.id)
+        await self.bot.db.log_transaction(
+            interaction.guild.id, interaction.user.id,
+            STARTER_BONUS, "starter", "One-time starter pack"
+        )
+
+        wallet, bank, *_ = await self.bot.db.get_wallet(interaction.guild.id, interaction.user.id)
+
+        embed = discord.Embed(
+            title="Starter Pack Claimed!",
+            description="Welcome! Here is your one-time starter pack.\n\n**+" + _fmt(STARTER_BONUS) + "** added to your wallet!",
+            colour=COL_WIN,
+            timestamp=datetime.datetime.utcnow()
+        )
+        embed.add_field(name="Wallet", value=_fmt(wallet), inline=True)
+        embed.add_field(name="Bank",   value=_fmt(bank),   inline=True)
+        embed.add_field(
+            name="How to earn more",
+            value=(
+                "`/daily` — up to 1,400 coins/day at max streak\n"
+                "`/work` — 50-150 coins every 30 minutes\n"
+                "`/slots` `/blackjack` `/crash` — gamble to grow faster\n"
+                "`/deposit` — keep winnings safe in your bank"
+            ),
+            inline=False
+        )
+        embed.set_footer(text="One-time bonus. Good luck!")
+        await interaction.response.send_message(embed=embed)
+
+        # ── /daily ────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="daily", description="Claim your daily coin reward")
     async def daily(self, interaction: discord.Interaction):

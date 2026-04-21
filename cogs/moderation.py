@@ -53,61 +53,97 @@ class AcceptWarningView(discord.ui.View):
         self.guild_id = guild_id
         self.warn_id  = warn_id
 
-        # Encode IDs into custom_id so it survives bot restarts
-        btn = discord.ui.Button(
-            label="✅  I accept this warning",
-            style=discord.ButtonStyle.success,
-            custom_id=f"accept_warning:{user_id}:{warn_id}"
-        )
-        btn.callback = self.accept
-        self.add_item(btn)
-
-    async def accept(self, interaction: discord.Interaction):
-        # Parse IDs from custom_id
-        _, user_id_str, warn_id_str = interaction.data["custom_id"].split(":")
-        user_id = int(user_id_str)
-        warn_id = int(warn_id_str)
-
+    @discord.ui.button(
+        label="✅  I accept this warning",
+        style=discord.ButtonStyle.success,
+        custom_id="accept_warning"
+    )
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Only the warned user can click
-        if interaction.user.id != user_id:
+        if interaction.user.id != self.user_id:
             await interaction.response.send_message(
                 "This button is not for you.", ephemeral=True
             )
             return
 
         guild  = interaction.guild
-        member = guild.get_member(user_id)
+        member = guild.get_member(self.user_id)
         if not member:
-            await interaction.response.send_message(
-                "Could not find you in the server.", ephemeral=True
-            )
+            await interaction.response.send_message("Could not find you in the server.", ephemeral=True)
             return
 
-        # Remove quarantine role
-        q_role = discord.utils.get(guild.roles, name=QUARANTINE_ROLE)
-        if q_role and q_role in member.roles:
-            await member.remove_roles(q_role, reason="Warning accepted")
+        db = interaction.client.db
 
-        # Mark warning as acknowledged in DB
-        await interaction.client.db.clear_warning(warn_id)
+        # Mark THIS warning as cleared
+        await db.clear_warning(self.warn_id)
 
-        # Disable button
-        for item in self.children:
-            item.disabled = True
-            item.label = "✅  Warning accepted"
+        # Check how many active warnings still remain
+        remaining = await db.count_active_warnings(guild.id, self.user_id)
+
+        # Disable button regardless
+        button.disabled = True
+        button.label = "✅  Warning accepted"
         await interaction.response.edit_message(view=self)
 
-        # Notify staff-chat
         staff_ch = await get_staff_channel(guild)
-        if staff_ch:
-            embed = discord.Embed(
-                title="⚠️  Warning Accepted",
-                description=f"{member.mention} has accepted their warning and been released from quarantine.",
-                colour=COL_OK,
-                timestamp=datetime.datetime.utcnow()
-            )
-            embed.set_thumbnail(url=member.display_avatar.url)
-            await staff_ch.send(embed=embed)
+
+        if remaining > 0:
+            # Still has open warnings — stay quarantined, tell them how many left
+            try:
+                dm = discord.Embed(
+                    title="⚠️  Warning Acknowledged",
+                    description=(
+                        f"You have accepted this warning, but you still have "
+                        f"**{remaining}** active warning(s) remaining.\n\n"
+                        "You must accept all warnings before you regain access to the server. "
+                        "Check the quarantine channel for the other accept buttons."
+                    ),
+                    colour=COL_WARN,
+                    timestamp=datetime.datetime.utcnow()
+                )
+                await member.send(embed=dm)
+            except discord.Forbidden:
+                pass
+
+            if staff_ch:
+                embed = discord.Embed(
+                    title="⚠️  Warning Accepted (Still Quarantined)",
+                    description=(
+                        f"{member.mention} accepted warning **#{self.warn_id}** "
+                        f"but still has **{remaining}** active warning(s). "
+                        f"They remain in quarantine."
+                    ),
+                    colour=COL_WARN,
+                    timestamp=datetime.datetime.utcnow()
+                )
+                embed.set_thumbnail(url=member.display_avatar.url)
+                await staff_ch.send(embed=embed)
+        else:
+            # All warnings accepted — remove quarantine role and release
+            q_role = discord.utils.get(guild.roles, name=QUARANTINE_ROLE)
+            if q_role and q_role in member.roles:
+                await member.remove_roles(q_role, reason="All warnings accepted")
+
+            try:
+                dm = discord.Embed(
+                    title="✅  All Warnings Accepted",
+                    description="You have accepted all your warnings and have been released from quarantine. Welcome back!",
+                    colour=COL_OK,
+                    timestamp=datetime.datetime.utcnow()
+                )
+                await member.send(embed=dm)
+            except discord.Forbidden:
+                pass
+
+            if staff_ch:
+                embed = discord.Embed(
+                    title="✅  Member Released from Quarantine",
+                    description=f"{member.mention} has accepted all warnings and been released from quarantine.",
+                    colour=COL_OK,
+                    timestamp=datetime.datetime.utcnow()
+                )
+                embed.set_thumbnail(url=member.display_avatar.url)
+                await staff_ch.send(embed=embed)
 
 
 # ── Moderation Cog ────────────────────────────────────────────────────────────
@@ -493,6 +529,87 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+
+    @app_commands.command(name="releasemember", description="Manually release a quarantined member (mod)")
+    @app_commands.describe(
+        member="Member to release",
+        clear_warnings="Also clear all their active warnings"
+    )
+    async def releasemember(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        clear_warnings: bool = False
+    ):
+        if not await self._check_mod(interaction):
+            return
+
+        guild  = interaction.guild
+        db     = self.bot.db
+
+        # Remove quarantine role
+        q_role = discord.utils.get(guild.roles, name=QUARANTINE_ROLE)
+        if q_role and q_role in member.roles:
+            await member.remove_roles(q_role, reason=f"Manually released by {interaction.user}")
+        else:
+            return await interaction.response.send_message(
+                f"❌ {member.mention} is not currently quarantined.",
+                ephemeral=True
+            )
+
+        # Optionally clear all active warnings
+        if clear_warnings:
+            warnings = await db.get_warnings(guild.id, member.id)
+            for warn_id, _, _, _, active in warnings:
+                if active:
+                    await db.clear_warning(warn_id)
+
+        remaining = await db.count_active_warnings(guild.id, member.id)
+
+        await db.log_action(guild.id, "RELEASE", member.id, interaction.user.id,
+                            f"Manual release{'+ warnings cleared' if clear_warnings else ''}")
+
+        # DM the member
+        try:
+            dm = discord.Embed(
+                title="✅  Released from Quarantine",
+                description=(
+                    f"You have been manually released from quarantine in **{guild.name}** "
+                    f"by a moderator."
+                    + (f"\n\nYou still have **{remaining}** active warning(s) on record." if remaining else "")
+                ),
+                colour=COL_OK,
+                timestamp=datetime.datetime.utcnow()
+            )
+            await member.send(embed=dm)
+        except discord.Forbidden:
+            pass
+
+        # Log to staff-chat
+        staff_ch = await get_staff_channel(guild)
+        if staff_ch:
+            embed = discord.Embed(
+                title="🔓  Member Manually Released",
+                colour=COL_OK,
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="Member",           value=f"{member.mention} (`{member.id}`)", inline=False)
+            embed.add_field(name="Released by",      value=interaction.user.mention, inline=True)
+            embed.add_field(name="Warnings cleared", value="Yes" if clear_warnings else "No", inline=True)
+            embed.add_field(name="Warnings remaining", value=str(remaining), inline=True)
+            await staff_ch.send(embed=embed)
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                description=(
+                    f"✅ {member.mention} has been released from quarantine."
+                    + (f" All warnings cleared." if clear_warnings else f" **{remaining}** warning(s) remain on record.")
+                ),
+                colour=COL_OK
+            ),
+            ephemeral=True
+        )
+
 async def setup(bot):
     await bot.add_cog(Moderation(bot))
-    bot.add_view(AcceptWarningView(0, 0, 0))  # registers the custom_id pattern

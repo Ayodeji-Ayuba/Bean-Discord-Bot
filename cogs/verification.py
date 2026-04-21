@@ -14,7 +14,7 @@ How it works:
   1. Admin runs /setupverify → bot posts an embed with a "Verify" button in #verify
   2. User clicks the button
   3. If CAPTCHA is enabled → modal pops up asking them to solve a math question
-  4. On success → bot assigns the "Verified" role, logs to #staff-chat, DMs user
+  4. On success → bot assigns the "Verified Member" role, logs to #staff-chat, DMs user
   5. If already verified → ephemeral message tells them so
 """
 
@@ -26,7 +26,7 @@ import random
 
 # ── Config ────────────────────────────────────────────────────────────────────
 VERIFY_CHANNEL_NAME = "verify"
-VERIFIED_ROLE_NAME  = "Verified"
+VERIFIED_ROLE_NAME  = "Verified Member"
 STAFF_CHAT_NAME     = "staff-chat"
 
 CAPTCHA_ENABLED     = True   # Set False to use single-click button only
@@ -150,14 +150,11 @@ class Verification(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def _get_or_create_role(self, guild: discord.Guild) -> discord.Role:
+    async def _get_or_create_role(self, guild: discord.Guild) -> discord.Role | None:
         role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
         if not role:
-            role = await guild.create_role(
-                name=VERIFIED_ROLE_NAME,
-                colour=discord.Colour.green(),
-                reason="Auto-created by verification system"
-            )
+            print(f"[Verification] WARNING: Role '{VERIFIED_ROLE_NAME}' not found in {guild.name}. "
+                  f"Please create it manually and ensure the bot role is above it.")
         return role
 
     async def _complete_verification(self, interaction: discord.Interaction):
@@ -170,7 +167,7 @@ class Verification(commands.Cog):
             await member.add_roles(role, reason="Passed verification")
         except discord.Forbidden:
             await interaction.response.send_message(
-                "❌ I don't have permission to assign the Verified role. Please contact an admin.",
+                "❌ I don't have permission to assign the Verified Member role. Please make sure my role is above it in the role list.",
                 ephemeral=True
             )
             return
